@@ -1,0 +1,51 @@
+version: "3.9"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_MODELS=/root/.ollama
+    volumes:
+      - ollama-models:/root/.ollama
+    # FIXED: Use 'ollama list' or 'ollama --version' which are built-in
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  init-model:
+      image: ollama/ollama:latest
+      depends_on:
+        ollama:
+          condition: service_healthy
+      volumes:
+        - ollama-models:/root/.ollama
+      entrypoint: ["/bin/sh", "-c"]
+      command: >
+        "export OLLAMA_HOST=ollama:11434 &&
+        echo 'Waiting for Ollama server at ollama:11434...' &&
+        until ollama list > /dev/null 2>&1; do
+          echo 'Server not ready yet, retrying in 2 seconds...'
+          sleep 2
+        done &&
+        echo 'Server is UP! Starting pulls...' &&
+        ollama pull gemma3:12b-it-qat &&
+        ollama pull mxbai-embed-large &&
+        echo 'All models pulled successfully!'"
+      restart: "no"
+
+volumes:
+  ollama-models:
