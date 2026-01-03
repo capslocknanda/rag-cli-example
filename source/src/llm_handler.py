@@ -18,10 +18,10 @@ class VSRagSignature(dspy.Signature):
     Instructions:
     1. Answer the question strictly using the provided context.
     2. Format citations as inline Markdown links: [Title](URL). 
-    3. If multiple sources support a claim, list them all.
-    4. Never use numeric citations like [1] or (1). 
-    5. If the answer is not in the context, say "I don't know based on the provided docs."
-    6. Try add enough and clear details in your explanations.
+    3. Try to add sufficient and clear informations in answer.
+    4. If the answer is not in the context, say "I don't know based on the provided docs."
+    5. If multiple sources support a claim, list them all.
+    6. Never use numeric citations like [1] or (1). 
     """
     history = dspy.InputField(desc="Previous conversation turns")
     context = dspy.InputField(desc="Relevant documentation chunks with source URLs.")

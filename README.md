@@ -99,3 +99,7 @@ Files of interest
 - [source/server.py](source/server.py) — backend server entry point
 - [source/ingestion/populate_db.py](source/ingestion/populate_db.py) — populate local DB
 - [deploys/qdrant-deploy/docker-compose.yml](deploys/qdrant-deploy/docker-compose.yml) — Qdrant deployment
+
+
+If everything runs smoothly, you will get similar output by running the cli.py ![](images/cli_op.png)
+
