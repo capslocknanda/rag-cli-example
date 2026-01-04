@@ -1,115 +1,130 @@
 import json
-import time
-from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse
+import asyncio
 from typing import TypedDict, List, Annotated
 import operator
+
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langgraph.checkpoint.memory import InMemorySaver
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 
-from src.llm_handler import load_lm, InputGuardrail, VSRagSignature
+# Import your custom handlers from the files you provided
+from src.llm_handler import build_llm_provider
 from src.db_handler import QdrantRetriever
+from src.prompts import query_analyzer_prompt, question_generator_prompt
 from src.log_setup import log
-import dspy
 
+# --- Schema for Stage 1 (Structured Output) ---
+class SubQueries(BaseModel):
+    queries: List[str] = Field(description="List of search queries for the vector database")
 
+# --- Graph State Definition ---
 class GraphState(TypedDict):
     query: str
-    is_continue: bool
-    is_safe: bool
+    queries: List[str]
     context: str
-    history: Annotated[List[dict], operator.add]
-    answer: str
+    # 'operator.add' allows history to persist and append across turns
+    history: Annotated[List[BaseMessage], operator.add]
 
+# --- Node Functions ---
 
-def guardrail_node(state: GraphState):
-    log.info("Node: Guardrail - Checking query safety")
-    checker = dspy.Predict(InputGuardrail)
-    res = checker(query=state["query"])
-    return {"is_safe": res.is_safe, "answer": res.reason if not res.is_safe else ""}
+async def analyzer_node(state: GraphState):
+    """Stage 1: Decompose query into sub-questions for better retrieval"""
+    log.info("Node: Analyzer - Decomposing user query")
+    llm = build_llm_provider()
+    
+    # Generate sub-queries using structured output
+    res = await llm.structured(
+        prompt=query_analyzer_prompt.format(
+            user_query=state["query"],
+            given_schema=json.dumps(SubQueries.model_json_schema())
+        ),
+        extract_schema=SubQueries,
+        temperature=0.0
+    )
+    
+    sub_queries = res.queries if hasattr(res, 'queries') else [state["query"]]
+    log.info(f"Sub-queries generated: {sub_queries}")
+    return {"queries": sub_queries}
 
-def retriever_node(state: GraphState):
-    query = state["query"]
-    log.info(f"Node: Retriever - Fetching context from Qdrant for query: '{query}'")
-    start_time = time.perf_counter()
+async def retriever_node(state: GraphState):
+    """Stage 2: Fetch context for all sub-queries from Qdrant"""
+    queries = state.get("queries", [state["query"]])
     retriever = QdrantRetriever()
-    context = retriever.get_context(query)
-    duration = time.perf_counter() - start_time
-    log.debug(f"Retriever raw context output for query '{query}':\n---\n{context}\n---")
-    log.info(f"Node: Retriever - Retrieved in {duration:.4f}s | Query: '{query}' | Context length: {len(context)}")
-    return {"context": context}
-
-def generator_node(state: GraphState):
-    log.info("Node: Generator - Synthesizing response")
-    start_time = time.perf_counter()
-    prog = dspy.ChainOfThought(VSRagSignature)
     
-    log.debug(f"Generator inputs:\n- Query: {state['query']}\n- History: {state['history']}\n- Context:\n---\n{state['context']}\n---")
+    # Run retrieval for all queries in parallel
+    tasks = [asyncio.to_thread(retriever.get_context, q) for q in queries]
+    contexts = await asyncio.gather(*tasks)
     
-    with dspy.context(config=dict(temperature=0.7, max_tokens=2048)):
-        res = prog(
-            context=state["context"], 
-            question=state["query"], 
-            history=state["history"]
-        )
+    # Join unique context chunks
+    combined_context = "\n\n---\n\n".join(list(set(contexts)))
+    return {"context": combined_context}
 
-    duration = time.perf_counter() - start_time
-    log.debug(f"Generator raw output:\n---\n{res}\n---")
-    log.info(f"Node: Generator - Response generated in {duration:.4f}s | Answer: {res.answer}")
-    
-    new_history = [{"user": state["query"], "assistant": res.answer}]
-    return {"answer": res.answer, "history": new_history}
-
+# --- Graph Construction ---
 workflow = StateGraph(GraphState)
-workflow.add_node("guardrail", guardrail_node)
+workflow.add_node("analyzer", analyzer_node)
 workflow.add_node("retriever", retriever_node)
-workflow.add_node("generator", generator_node)
 
-workflow.set_entry_point("guardrail")
+workflow.set_entry_point("analyzer")
+workflow.add_edge("analyzer", "retriever")
+workflow.add_edge("retriever", END)
 
-workflow.add_conditional_edges(
-    "guardrail", 
-    lambda x: "retriever" if x["is_safe"] else END
-)
-workflow.add_edge("retriever", "generator")
-workflow.add_edge("generator", END)
-
+# Persistence layer
 memory = InMemorySaver()
 graph = workflow.compile(checkpointer=memory)
 
 app = FastAPI()
-load_lm()
 
 @app.post("/stream")
 async def stream_endpoint(request: Request):
     body = await request.json()
-    config = {"configurable": {"thread_id": body.get("thread_id", "default")}}
+    thread_id = body.get("thread_id", "default")
+    user_query = body["query"]
+    is_continue = body.get("is_continue", True)
     
-    # Reset history if is_continue is False
-    if not body.get("is_continue"):
-        memory.storage.pop(config["configurable"]["thread_id"], None)
+    config = {"configurable": {"thread_id": thread_id}}
+    llm = build_llm_provider()
+
+    # --- Handle is_continue logic ---
+    if not is_continue:
+        log.info(f"Flushing chat history for thread: {thread_id}")
+        # We update the state to have an empty list for history
+        # This effectively "resets" the memory for this thread
+        await graph.aupdate_state(config, {"history": []})
+
+    # 1. Run the Graph (Stage 1 & 2) to prepare context
+    # Note: We pass an empty dict for history here because the checkpointer 
+    # will automatically load the existing history for this thread_id.
+    final_state = await graph.ainvoke({"query": user_query}, config=config)
+    
+    # 2. Extract current history for the prompt
+    current_history = final_state.get("history", [])
+
+    # 3. Format the Generator Prompt
+    prompt_value = question_generator_prompt.format(
+        context=final_state["context"],
+        chat_history=current_history,
+        user_query=user_query
+    )
 
     async def event_generator():
-        async for event in graph.astream(
-            {"query": body["query"], "is_continue": body.get("is_continue")},
-            config=config,
-            stream_mode="updates"
-        ):
-            node_name = list(event.keys())[0]
-            data = event[node_name]
-            
-            if node_name == "generator":
-                yield f"data: {json.dumps({'text': data['answer']})}\n\n"
-            else:
-                log.debug(f"Status update from {node_name}: {data}")
+        full_response = ""
+        # 4. Stream output using the custom stream_generate method
+        async for chunk in llm.stream_generate(prompt=prompt_value, temperature=0.3):
+            full_response += chunk
+            yield f"data: {json.dumps({'text': chunk})}\n\n"
+        
+        # 5. Save the turn back to the graph's history
+        new_messages = [
+            HumanMessage(content=user_query),
+            AIMessage(content=full_response)
+        ]
+        await graph.aupdate_state(config, {"history": new_messages})
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-
 if __name__ == "__main__":
     import uvicorn
-    from src.log_setup import log
-
-    log.info("Starting ViewSonic Software RAG Server...")
-    
     uvicorn.run(app, host="0.0.0.0", port=8000)

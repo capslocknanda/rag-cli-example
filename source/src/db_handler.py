@@ -10,6 +10,7 @@ class QdrantRetriever:
         self.o_client = OllamaClient(host=os.getenv("OLLAMA_HOST", "http://localhost:11434"))
         self.o_model = os.getenv("OLLAMA_EMBEDDING_MODEL", "mxbai-embed-large")
         self.q_collection = os.getenv("QDRANT_COLLECTION_NAME", "viewsonic_software_docs")
+        self.q_limit = int(os.getenv("QDRANT_SEARCH_LIMIT", "4"))
 
     def get_context(self, query: str):
         log.info(f"Starting retrieval for: '{query}'")
@@ -24,7 +25,7 @@ class QdrantRetriever:
             hits = self.q_client.query_points(
                 collection_name=self.q_collection,
                 query=emb,
-                limit=4,
+                limit=self.q_limit,
                 with_payload=True
             ).points
         except Exception as e:
