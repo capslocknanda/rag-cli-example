@@ -39,7 +39,8 @@ def semantic_header_chunking(text):
     
     for i in range(len(segments)):
         part = segments[i].strip()
-        if not part: continue
+        if not part: 
+            continue
         
         # If it's a header, update current context
         if part.startswith('#'):
@@ -62,7 +63,8 @@ def populate_db():
     idx = 0
     
     for filename in os.listdir(DOCS_DIR):
-        if not filename.endswith(".md"): continue
+        if not filename.endswith(".md"): 
+            continue
         
         file_path = os.path.join(DOCS_DIR, filename)
         with open(file_path, "r", encoding="utf-8") as f:

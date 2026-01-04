@@ -9,7 +9,8 @@ from pydantic import BaseModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
-from loguru import logger
+
+from src.log_setup import log
 
 
 _BM = TypeVar("_BM", bound=BaseModel)
@@ -42,7 +43,7 @@ class BaseLLMProvider(ABC):
 
         return await structured_llm.ainvoke(messages)
 
-    async def stream_generate(
+    async def generate(
         self,
         prompt: str,
         system_prompt: Optional[str] = None,
@@ -55,10 +56,8 @@ class BaseLLMProvider(ABC):
 
         active_llm = self.llm.bind(temperature=temperature) if temperature is not None else self.llm
 
-        async for chunk in active_llm.astream(messages):
-            if chunk.content:
-                yield str(chunk.content)
-
+        response = await active_llm.ainvoke(messages)
+        return response.content
 
 # -------- Ollama (OpenAI-compatible) --------
 class OllamaProvider(BaseLLMProvider):
@@ -95,7 +94,7 @@ def build_llm_provider(
                 model=os.environ.get("OLLAMA_GENERATE_MODEL"),
                 timeout=float(os.environ.get("OLLAMA_TIMEOUT", "60.0")),
             )
-            logger.info("Initialized Ollama provider")
+            log.info("Initialized Ollama provider")
             return llm_provider
         elif model_provider == "gemini":
             llm_provider = GoogleAIProvider(
@@ -103,10 +102,11 @@ def build_llm_provider(
                 model=os.environ.get("GEMINI_GENERATE_MODEL"),
                 timeout=float(os.environ.get("GEMINI_TIMEOUT", "60.0")),
             )
-            logger.info("Initialized Gemini provider")
+            log.info("Initialized Gemini provider")
             return llm_provider
         else:
             raise ValueError(f"Unsupported LLM provider: {model_provider}")
     except Exception as e:
-        logger.error(f"Failed to initialize LLM provider: {str(e)}")
+        log.exception(f"Error initializing LLM provider: {e}")
+        log.error("Failed to initialize LLM provider")
         raise

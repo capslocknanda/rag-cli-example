@@ -4,10 +4,11 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 query_analyzer_prompt = ChatPromptTemplate.from_messages([
     ("user", (
         "### ROLE\n"
-        "You are an expert Query Optimizer for a RAG system.\n\n"
+        "You are an expert Query Optimizer. Your goal is to prepare a search strategy.\n\n"
         "### TASK\n"
-        "Analyze the User Query and break it into a JSON list of independent, atomic sub-questions "
-        "needed to retrieve full context from a vector database.\n\n"
+        "1. Analyze the 'Current User Query'.\n"
+        "2. Review 'Past Search Queries' to understand the user's ongoing intent (e.g., are they refining a previous search?).\n"
+        "3. Break the current query into a JSON list of atomic sub-questions for vector retrieval.\n"
         "### RULES\n"
         "1. Decompose comparisons (A vs B) into separate searches for A and B.\n"
         "2. If the query is simple, return a single-item list.\n"
@@ -16,12 +17,15 @@ query_analyzer_prompt = ChatPromptTemplate.from_messages([
         "### EXAMPLES\n"
         "Input: 'Difference between ClassSwift and TeamOne?'\n"
         "Output: [\"What is ClassSwift and its features?\", \"What is TeamOne and its features?\"]\n\n"
-        "### INPUT QUERY\n"
-        "User Query: {user_query}\n\n"
+        "Input: 'How can one share a project or board in teamone?'\n"
+        "Output: [\"How can one share a project or board in teamone?\"]\n\n"
+        "### PAST SEARCH QUERIES\n"
+        "{past_queries}\n\n"
+        "### CURRENT USER QUERY\n"
+        "{user_query}\n\n"
         "### RESPONSE (JSON LIST)"
     ))
 ])
-
 
 question_generator_prompt = ChatPromptTemplate.from_messages([
     ("user", (
@@ -37,7 +41,8 @@ question_generator_prompt = ChatPromptTemplate.from_messages([
         "### USER QUESTION\n"
         "{user_query}\n\n"
         "### FINAL ANSWER REQUIREMENTS\n"
-        "- Be direct and concise.\n"
+        "- Provide a concise and clear answer to the user's question.\n"
+        "- Be factually correct in your response.\n"
         "- Use bullet points for features and feature-based comparisons.\n"
         "- CITATIONS: At the end of your response, provide a 'Sources' section.\n"
         "- LINKS: Extract the 'Source' paths/URLs from the context and list them as clickable Markdown links.\n"

@@ -50,8 +50,9 @@ class QdrantRetriever:
                 f"Hit [{i+1}] | Length: {chunk_len} chars | "
                 f"Source: {source.split('/')[-1]} | Section: {section}"
             )
+            log.debug(f"Content: {content}")
             
-            if chunk_len < 100:
+            if chunk_len < 80:
                 log.warning(f"Small chunk detected at Hit [{i+1}]. Possible noise or poor split.")
 
             context_parts.append(

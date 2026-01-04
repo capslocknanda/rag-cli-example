@@ -47,8 +47,8 @@ class ChatSession:
                                 full_response += event.data
                                 live.update(Panel(Markdown(full_response), title="Assistant", border_style="blue"))
                                 
-            except Exception as e:
-                console.print(f"[bold red]Error:[/bold red] {e}")
+            except Exception:
+                console.print("[bold red]Error:[/bold red] An unexpected error occurred. Please check the logs for details.")
 
         self.is_continue = True
 
