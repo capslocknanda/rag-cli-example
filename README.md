@@ -19,7 +19,8 @@ If you are on Windows, use PowerShell or Command Prompt; on macOS/Linux use a sh
 2) Copy environment file
 
 	cp .env.example .env
-	# On Windows: copy .env.example .env
+	
+	`On Windows: copy .env.example .env`
 
 3) Create and activate a Python virtual environment
 
@@ -61,20 +62,19 @@ Alternatively, use pip:
 	docker-compose up --build
 
 To restore a snapshot (replica DB):
-	# Place your backup snapshot in deploys/qdrant-deploy/backups/
-	# Follow Qdrant's restore instructions or use the provided scripts if available.
+	Once the Qdrant db is running go to the browser portan and used the snapshot from `./deploys/qdrant-deploy/backups` to load the database.
 
 7) Start the backend server (local development)
 
 	cd source
-	python server.py
+	uv run server.py
 
 The notebook and cli clients expect the API at `http://localhost:8000/stream` — ensure the server is listening on port 8000.
 
 8) Populate local DB (optional / if needed (snapshot restore fails))
 
 	cd source
-	python ingestion/populate_db.py
+	uv run ingestion/populate_db.py
 
 9) Open and run the notebook
 
@@ -87,7 +87,7 @@ Open `source/jpy-nb.ipynb` in Jupyter or JupyterLab and run the cells. The noteb
 Or `source/cli.py`. You can run them from the `source` folder:
 
 	cd source
-	python cli.py <command>
+	uv run cli.py
 
 11) Troubleshooting notes
 - If imports fail, ensure the virtual environment is activated and dependencies installed.
@@ -95,6 +95,7 @@ Or `source/cli.py`. You can run them from the `source` folder:
 - Use `uv sync` or `pip install -e ./source` if dependencies are missing.
 
 Files of interest
+- [source/cli.py](source/cli.py) — CLI app to query the server and stream. [P.S If you want to continue conversation press `Y`, if you press `n` it will flush the conversation history]
 - [source/jpy-nb.ipynb](source/jpy-nb.ipynb) — example notebook that streams from the local server
 - [source/server.py](source/server.py) — backend server entry point
 - [source/ingestion/populate_db.py](source/ingestion/populate_db.py) — populate local DB
