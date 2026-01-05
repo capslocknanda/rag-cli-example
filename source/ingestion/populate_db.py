@@ -1,113 +1,102 @@
-import os
 import re
-import dspy
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
-from ollama import Client as OllamaClient
+
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain_ollama import OllamaEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_qdrant import QdrantVectorStore
+from langchain_core.documents import Document
 
 # --- CONFIGURATION ---
-DOCS_DIR = "../../rag-docs/pages-raw"
+DOCS_DIRECTORY = "../../rag-docs/pages-raw"
 QDRANT_URL = "http://localhost:6333"
 COLLECTION_NAME = "viewsonic_software_docs"
-EMBED_MODEL = "mxbai-embed-large"
-VECTOR_SIZE = 1024 # mxbai-embed-large dimension
 
-# Initialize Clients
-q_client = QdrantClient(url=QDRANT_URL)
-o_client = OllamaClient(host="http://localhost:11434")
+# Native Ollama Provider (Fixes the 400 BadRequest Error)
+embeddings_provider = OllamaEmbeddings(
+    model="mxbai-embed-large",
+    base_url="http://localhost:11434"
+)
 
-def create_collection():
-    """Initializes the Qdrant collection if it doesn't exist."""
-    if not q_client.collection_exists(COLLECTION_NAME):
-        q_client.create_collection(
-            collection_name=COLLECTION_NAME,
-            vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
-        )
-        print(f"Created collection: {COLLECTION_NAME}")
-
-def semantic_header_chunking(text):
+def extract_source_and_trim(doc: Document) -> Document:
     """
-    Splits markdown by headers while maintaining hierarchy.
-    Returns a list of dicts with content and section info.
+    Extracts the first-line URL and trims all content before the first '#' tag.
     """
-    # Split by headers (h1, h2, h3)
-    segments = re.split(r'(^#+\s.*)', text, flags=re.MULTILINE)
+    content = doc.page_content
     
-    chunks = []
-    current_section = "General"
-    current_sub_section = ""
+    # 1. Extract Source URL from the first line
+    source_match = re.search(r'^Source:\s*(https?://[^\s]+)', content, re.MULTILINE)
+    doc.metadata = {"url": source_match.group(1) if source_match else "Unknown Source"}
     
-    for i in range(len(segments)):
-        part = segments[i].strip()
-        if not part: 
-            continue
-        
-        # If it's a header, update current context
-        if part.startswith('#'):
-            if part.startswith('###'): 
-                current_sub_section = part.replace('#', '').strip()
-            else: 
-                current_section = part.replace('#', '').strip()
-                current_sub_section = "" # Reset sub-section on new main section
-        else:
-            # This is the content following a header
-            chunks.append({
-                "content": part,
-                "section": current_section,
-                "sub_section": current_sub_section
-            })
-    return chunks
+    # 2. Drop everything before the first '#' (Navigation/Menu noise)
+    first_header_idx = content.find('#')
+    if first_header_idx != -1:
+        content = content[first_header_idx:]
+    else:
+        # If no # tag exists, clear content to avoid ingesting purely nav links
+        doc.page_content = ""
+        return doc
 
-def populate_db():
-    create_collection()
-    idx = 0
+    # 3. Basic Sanitization: clean trailing whitespace and redundant newlines
+    lines = [line.rstrip() for line in content.splitlines()]
+    content = "\n".join(lines)
+    doc.page_content = re.sub(r'\n{3,}', '\n\n', content).strip()
     
-    for filename in os.listdir(DOCS_DIR):
-        if not filename.endswith(".md"): 
+    return doc
+
+def run_ingestion_pipeline():
+    """
+    Simplified pipeline using only RecursiveCharacterTextSplitter and URL metadata.
+    """
+    print(f"Loading files from {DOCS_DIRECTORY}...")
+    
+    loader = DirectoryLoader(
+        DOCS_DIRECTORY, 
+        glob="**/*.md", 
+        loader_cls=TextLoader,
+        loader_kwargs={'encoding': 'utf-8'}
+    )
+    
+    raw_documents = loader.load()
+    if not raw_documents:
+        print("No documents found.")
+        return
+
+    # 1. Trim noise and extract URL
+    processed_docs = [extract_source_and_trim(doc) for doc in raw_documents]
+
+    # 2. Simplified Recursive Chunking
+    # chunk_size is large to keep context, min length check happens after
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1200,
+        chunk_overlap=150,
+        add_start_index=True,
+        strip_whitespace=True
+    )
+
+    final_chunks = []
+    for doc in processed_docs:
+        if not doc.page_content:
             continue
+            
+        # Perform simple recursive splitting
+        chunks = text_splitter.split_documents([doc])
         
-        file_path = os.path.join(DOCS_DIR, filename)
-        with open(file_path, "r", encoding="utf-8") as f:
-            raw_text = f.read()
-        
-        # Extract Source Link (from the header we added in the scraper)
-        source_match = re.search(r'Source: (https?://[^\s]+)', raw_text)
-        source_url = source_match.group(1) if source_match else filename
-        
-        # Clean the text (remove the Source line for embedding)
-        clean_text = re.sub(r'Source: https?://[^\s]+', '', raw_text).strip()
-        
-        # Chunking based on Markdown Hierarchy
-        chunks = semantic_header_chunking(clean_text)
-        
-        print(f"Processing {filename}: {len(chunks)} chunks found.")
-        
+        # 3. Filter: Only include chunks with at least 200 characters
+        # This prevents tiny footers/fragments from cluttering the DB
         for chunk in chunks:
-            # Generate Embedding via Ollama
-            response = o_client.embeddings(model=EMBED_MODEL, prompt=chunk["content"])
-            embedding = response["embedding"]
-            
-            # Prepare Payload for Qdrant
-            payload = {
-                "source": source_url,
-                "section": chunk["section"],
-                "sub_section": chunk["sub_section"],
-                "text": chunk["content"]
-            }
-            
-            # Upsert to Qdrant
-            q_client.upsert(
-                collection_name=COLLECTION_NAME,
-                points=[
-                    PointStruct(
-                        id=idx,
-                        vector=embedding,
-                        payload=payload
-                    )
-                ]
-            )
-            idx += 1
+            if len(chunk.page_content) >= 200:
+                final_chunks.append(chunk)
+
+    # 4. Ingest into Qdrant
+    print(f"Ingesting {len(final_chunks)} chunks into Qdrant...")
+    QdrantVectorStore.from_documents(
+        final_chunks,
+        embeddings_provider,
+        url=QDRANT_URL,
+        collection_name=COLLECTION_NAME,
+        force_recreate=True 
+    )
+    print("Database population complete.")
 
 if __name__ == "__main__":
-    populate_db()
-    print("Database population complete!")
+    run_ingestion_pipeline()
